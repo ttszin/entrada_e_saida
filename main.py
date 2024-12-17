@@ -41,153 +41,98 @@ import threading
 from tqdm import tqdm
 import time
 import random
-import time
-try:
-    from tqdm import tqdm
-except:
-    print("Modulo 'tqdm' nao instalado.\nTente pip install tqdm")
 from queue import Queue
 
 class Processo:
-    def __init__(self, name, PID, time_exec, prioridade, qnt_memoria, pages_sequence, chance_to_request ):
-        """Inicializa os atributos de um processo."""
+    def __init__(self, name, PID, time_exec, prioridade, qnt_memoria, pages_sequence, chance_to_request):
         self.name = name
-        self.PID = int(PID) 
+        self.PID = int(PID)
         self.time_exec = int(time_exec)
         self.prioridade = int(prioridade)
         self.qnt_memoria = int(qnt_memoria)
         self.pages_sequence = [pages_sequence]
         self.chance_to_request = int(chance_to_request)
         self.time_processed = 0
-        self.finished = None
-        self.numeros = []
-        self.state = None
-    
-    def processa(self,quantum):
-        """Imita o tempo gasto pelo processador diminuindo o tempo de execucao
-        do processo.
-        """
-        
-        for i in tqdm(range(quantum)):   
-            #sys.stdout.write("\r{0}>".format("="*i))
-            #sys.stdout.flush()
+        self.state = "ready"
+
+    def processa(self, quantum):
+        for i in tqdm(range(quantum)):
             time.sleep(0.5)
-        
-        self.time_processed = self.time_processed+quantum
-        self.time_exec = self.time_exec-quantum
-    
+        self.time_processed += quantum
+        self.time_exec -= quantum
+
 class Device:
-    def __init__(self, id, sim_uses,time_operation ):
+    def __init__(self, id, sim_uses, time_operation):
         self.id = str(id)
         self.simultaneous_uses = int(sim_uses)
-        self.time_operation = int(time_operation) 
-        self.processes_using = int(0)
+        self.time_operation = int(time_operation)
+        self.current_uses = 0
         self.queue = Queue()
-        self.in_use = threading.Lock()  # Controle de uso do dispositivo
+        self.lock = threading.Lock()
 
     def start_operation(self, processo):
         with self.lock:
-            if self.current_uses < self.max_simultaneous_uses:  # Verifica se há espaço
+            if self.current_uses < self.simultaneous_uses:
                 self.current_uses += 1
-                print(f"{processo.name} iniciou E/S no dispositivo {self.id}. ({self.current_uses}/{self.max_simultaneous_uses} em uso)")
+                print(f"{processo.name} iniciou E/S no dispositivo {self.id} ({self.current_uses}/{self.simultaneous_uses} em uso)")
                 threading.Thread(target=self._run_operation, args=(processo,)).start()
             else:
-                print(f"{processo.name} entrou na fila de espera do dispositivo {self.id}.")
-                self.queue.put(processo)  # Coloca o processo na fila de espera
+                print(f"{processo.name} entrou na fila de espera do dispositivo {self.id}")
+                self.queue.put(processo)
 
     def _run_operation(self, processo):
-        time.sleep(self.time_operation)  # Simula tempo de operação do dispositivo
-        print(f"{processo.name} finalizou E/S no dispositivo {self.id}.")
-        processo.state = "ready"  # Marca o processo como pronto após E/S
+        time.sleep(self.time_operation)
+        print(f"{processo.name} finalizou E/S no dispositivo {self.id}")
+        processo.state = "ready"
         with self.lock:
-            self.current_uses -= 1  # Libera uma "vaga" no dispositivo
+            self.current_uses -= 1
             if not self.queue.empty():
                 next_process = self.queue.get()
-                self.start_operation(next_process)  # Atende o próximo processo na fila, se houver
-        
-def check_states(processos, finalizados = []):
+                self.start_operation(next_process)
+
+def check_states(processos, finalizados=[]):
     prontos = []
-    n = len(processos)
-    for i in range(n):
-        if processos[i].time_exec <= 0:
-            finalizados.append(processos[i])
-        elif processos[i].time_exec > 0:
-            prontos.append(processos[i])
+    for processo in processos:
+        if processo.time_exec <= 0:
+            finalizados.append(processo)
         else:
-            print("ERRO NO MÓDULO:      check_states")
-            
+            prontos.append(processo)
     return prontos, finalizados
-        
 
-def sorteio_requisicao(processo,devices,num_dispositivos):
-    chance = random.random()   #Gerando um numero aleatorio entre 0 e 1
-    if chance <= processo.chance_to_request/100:
-        print("Requisição de E/S realizada.\n")
-        num_sorted_device = random.randint(0,int(num_dispositivos)-1)
-        sorted_device = "device-"+str(num_sorted_device)
-        print(f"Dispositivo sorteado: ==={sorted_device}===")
-        for device in devices:
-            if device.id == sorted_device:
-                if device.processes_using < device.simultaneous_uses:
-                    device.processes_using += 1
-                    processo.state = "blocked"
-                    device.realiza_es()
-                    print(f"{processo.name} começou a realizar uma operação de entrada e saída no dispositivo {device.id}...\n")
-                    break
-                else:
-                    device.queue.append(processo)
-                    processo.state = "blocked"
-                    print(f"Processo {processo.name} entrou na fila de espera do dispositivo {device.id} ...\n")      
+def sorteio_requisicao(processo, devices, num_dispositivos):
+    chance = random.random()
+    if chance <= processo.chance_to_request / 100:
+        num_sorted_device = random.randint(0, int(num_dispositivos) - 1)
+        sorted_device = devices[num_sorted_device]
+        processo.state = "blocked"
+        sorted_device.start_operation(processo)
         return True
-    else:
-        print("Requisição não realizada\n")
-        return False
+    return False
 
-def round_robin(processos,quantum,devices,num_dispositivos):
-    
-    quantum = int(quantum)
-    sys.stdout.write("\nInicio do escalonamento\n###################\n")
-    
-    global prontos,finalizados
+def round_robin(processos, quantum, devices, num_dispositivos):
     prontos, finalizados = check_states(processos)
-    
     tam_processos = len(processos)
     while True:
-        sys.stdout.write("Quantidade de processos: {}\n".format(len(prontos)))
-        sys.stdout.write("####### CPU #######\n")
         for proc in prontos:
-            if proc.state != "blocked":
-                if sorteio_requisicao(proc,devices,num_dispositivos):                #Confere se a requisicao de E/S será feita ou não        
+            if proc.state == "ready":
+                if sorteio_requisicao(proc, devices, num_dispositivos):
                     continue
-                else:
-                    sys.stdout.write("\n## Processo: {}\n".format(proc.name))
-                    sys.stdout.write("Tempo antes de processar: {}\n".format(proc.time_exec))
-                    sys.stdout.write("Processando...\n")
-                    
-                    proc.processa(quantum)
-                    
-                    sys.stdout.write("Tempo restante: {}\n".format(proc.time_exec))
-            else:
-                continue
-        
-        prontos, finalizados = check_states(processos=prontos,finalizados=finalizados)
-        sys.stdout.write("Processos finalizados: {}\n".format(len(finalizados)))
+                print(f"\n## Processo: {proc.name}")
+                print(f"Tempo antes de processar: {proc.time_exec}")
+                proc.processa(quantum)
+                print(f"Tempo restante: {proc.time_exec}")
+        prontos, finalizados = check_states(prontos, finalizados)
         if len(finalizados) == tam_processos:
-            sys.stdout.write("\n####### FIM DO ESCALONAMENTO #######\nTodos os processos finalizados")
+            print("\n####### FIM DO ESCALONAMENTO #######\nTodos os processos finalizados")
             break
 
-
 def process_header_config(filename):
-    # Abre o arquivo com os processos .
     with open(filename) as file_object:
-        # Le o cabecalho do arquivo
         header = file_object.readline()
-        escalonador, quantum,politica_mem,tam_memoria,tam_molduras,tam_aloc,acessos_ciclo,num_dispositivos = header.split("|")
-        # Le o resto do arquivo com os processos
-        file = file_object.readlines()      
-        
-        return header,escalonador, quantum,politica_mem,tam_memoria,tam_molduras,tam_aloc,acessos_ciclo,num_dispositivos,file
-    
+        escalonador, quantum, politica_mem, tam_memoria, tam_molduras, tam_aloc, acessos_ciclo, num_dispositivos = header.split("|")
+        file = file_object.readlines()
+        return header, escalonador, quantum, politica_mem, tam_memoria, tam_molduras, tam_aloc, acessos_ciclo, num_dispositivos, file
+
 def process_global_config(line):
     parts = line.split('|')
     nomeProcesso = parts[0]
@@ -195,53 +140,28 @@ def process_global_config(line):
     tempoDeExecucao = int(parts[2])
     prioridade = int(parts[3])
     qtdeMemoria = int(parts[4])
-    page_refs = list(map(int, parts[5].split()))  # Sequência de referências de página
+    page_refs = list(map(int, parts[5].split()))
     chance_request = int(parts[6])
-    return Processo(nomeProcesso, PID, tempoDeExecucao, prioridade, qtdeMemoria, page_refs,chance_request)
+    return Processo(nomeProcesso, PID, tempoDeExecucao, prioridade, qtdeMemoria, page_refs, chance_request)
 
 def process_devices_config(line):
     parts = line.split('|')
     id = parts[0]
     sim_uses = parts[1]
     time_operation = parts[2]
-    
-    return Device(id,sim_uses,time_operation)
-    
+    return Device(id, sim_uses, time_operation)
 
 def main():
-    
     diretorio_processos = ''
     arquivo = 'entrada_ES.txt'
     filename = diretorio_processos + arquivo
 
-    # Processa a configuração global (primeira linha)
-    header,escalonador, quantum,politica_mem,tam_memoria,tam_molduras,tam_aloc,acessos_ciclo,num_dispositivos,file = process_header_config(filename)
-    
-    print("Cabecalho do arquivo: {0}\nEscalonador: {1}\nQuantum: {2}\nPolitica de memoria: {3}\nTamanho Da Memoria: {4}\nTamanho das molduras: {5}\nTamanho das alocacoes: {6}\nAcessos por ciclo: {7}\nNumero de dispositivos: {8}\n".format(header, escalonador, quantum,politica_mem,tam_memoria,tam_molduras,tam_aloc,acessos_ciclo,num_dispositivos))
-    
-    i = int(num_dispositivos)
-    devices = []
-    processes = []
+    header, escalonador, quantum, politica_mem, tam_memoria, tam_molduras, tam_aloc, acessos_ciclo, num_dispositivos, file = process_header_config(filename)
 
-    #criando os devices
-    for j in range(i):
-        devices.append(process_devices_config(file[0]))
-        del file[0]
-    
-    #criando os processos
-    for n in range(len(file)):
-        processes.append(process_global_config(file[n]))
-    
-    
-    
-    round_robin(processes,quantum,devices,num_dispositivos)
-        
-    #for i in range(len(file)):
-        
-        #processes.append(Processo(file[i]))
-    
-        
-    
-    
+    devices = [process_devices_config(file[i]) for i in range(int(num_dispositivos))]
+    processes = [process_global_config(line) for line in file[int(num_dispositivos):]]
+
+    round_robin(processes, int(quantum), devices, int(num_dispositivos))
+
 if __name__ == "__main__":
     main()
